@@ -173,6 +173,30 @@ class RAGMultiModalModel:
         """
         return self.model.search(query, k, filter_metadata, return_base64_results)
 
+    def search_by_page(
+        self,
+        doc_id: int,
+        page_num: int,
+        k: int = 10,
+        filter_metadata: Optional[Dict[str, str]] = None,
+        return_base64_results: Optional[bool] = None,
+    ) -> List[Result]:
+        """Find the most similar pages to a given page in the index.
+
+        Parameters:
+            doc_id (int): The document ID of the reference page.
+            page_num (int): The page number of the reference page (1-indexed).
+            k (int): The number of similar results to return. Default is 10.
+            filter_metadata (Optional[Dict[str, str]]): Optional metadata filter to apply.
+            return_base64_results (Optional[bool]): Whether to return base64-encoded image results.
+
+        Returns:
+            List[Result]: A list of Result objects representing the most similar pages.
+        """
+        return self.model.search_by_page(
+            doc_id, page_num, k, filter_metadata, return_base64_results
+        )
+
     def get_doc_ids_to_file_names(self):
         return self.model.get_doc_ids_to_file_names()
 

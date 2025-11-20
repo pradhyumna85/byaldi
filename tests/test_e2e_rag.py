@@ -114,6 +114,48 @@ def test_multi_document(rag_model_from_pretrained: RAGMultiModalModel):
             ), "Expected pages 8 or 9 for BLEU score query"
 
 
+@pytest.mark.slow
+def test_search_by_page(rag_model_from_pretrained: RAGMultiModalModel):
+    if not Path("docs/attention.pdf").is_file():
+        raise FileNotFoundError(
+            f"Please download the PDF file from https://arxiv.org/pdf/1706.03762 and move it to {path_document_1}."
+        )
+
+    # Index a single PDF
+    rag_model_from_pretrained.index(
+        input_path="docs/attention.pdf",
+        index_name="attention_index_search_by_page",
+        store_collection_with_index=True,
+        overwrite=True,
+    )
+
+    # Test search_by_page: find pages similar to page 6 (positional encoding)
+    doc_id = 0
+    page_num = 6
+    k = 5
+
+    results = rag_model_from_pretrained.search_by_page(
+        doc_id=doc_id, page_num=page_num, k=k
+    )
+
+    print(f"\nPages similar to doc_id={doc_id}, page_num={page_num}:")
+    for result in results:
+        print(
+            f"Doc ID: {result.doc_id}, Page: {result.page_num}, Score: {result.score}"
+        )
+
+    # Verify we got results
+    assert len(results) > 0, "Expected at least one similar page"
+    
+    # Verify the query page itself is not in the results
+    assert not any(
+        r.doc_id == doc_id and r.page_num == page_num for r in results
+    ), "Query page should not be in results"
+    
+    # Verify all results have valid scores
+    assert all(r.score > 0 for r in results), "All results should have positive scores"
+
+
 @pytest.mark.skip("This test should be made independent of the previous tests.")
 @pytest.mark.slow
 def test_add_to_index(rag_model_from_index: RAGMultiModalModel):

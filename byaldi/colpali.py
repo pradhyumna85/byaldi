@@ -695,6 +695,92 @@ class ColPaliModel:
 
         return results[0] if isinstance(query, str) else results
 
+    def search_by_page(
+        self,
+        doc_id: int,
+        page_num: int,
+        k: int = 10,
+        filter_metadata: Optional[Dict[str, str]] = None,
+        return_base64_results: Optional[bool] = None,
+    ) -> List[Result]:
+        """
+        Find the most similar pages to a given page in the index.
+
+        Parameters:
+            doc_id (int): The document ID of the reference page.
+            page_num (int): The page number of the reference page (1-indexed).
+            k (int): The number of similar results to return. Default is 10.
+            filter_metadata (Optional[Dict[str, str]]): Optional metadata filter to apply.
+            return_base64_results (Optional[bool]): Whether to return base64-encoded image results.
+
+        Returns:
+            List[Result]: A list of Result objects representing the most similar pages.
+        """
+        # Set default value for return_base64_results if not provided
+        if return_base64_results is None:
+            return_base64_results = bool(self.collection)
+
+        # Find the embedding ID for the given doc_id and page_num
+        embed_id = None
+        for eid, doc_info in self.embed_id_to_doc_id.items():
+            if doc_info["doc_id"] == doc_id and doc_info["page_id"] == page_num:
+                embed_id = eid
+                break
+
+        if embed_id is None:
+            raise ValueError(
+                f"Page not found in index: doc_id={doc_id}, page_num={page_num}"
+            )
+
+        # Get the embedding for this page
+        page_embedding = self.indexed_embeddings[embed_id]
+
+        # Prepare embeddings for scoring
+        if filter_metadata:
+            req_embeddings, req_embedding_ids = self.filter_embeddings(
+                filter_metadata=filter_metadata
+            )
+        else:
+            req_embeddings = self.indexed_embeddings
+            req_embedding_ids = None
+
+        # Ensure k is not larger than the number of indexed documents
+        k = min(k, len(req_embeddings))
+
+        # Compute scores using the page embedding
+        # The page_embedding needs to be in the same format as query embeddings
+        qs = [page_embedding]
+        scores = self.processor.score(qs, req_embeddings).cpu().numpy()
+
+        # Get top k relevant pages
+        top_pages = scores.argsort(axis=1)[0][-k:][::-1].tolist()
+
+        # Create Result objects
+        query_results = []
+        for idx in top_pages:
+            if filter_metadata:
+                adjusted_embed_id = req_embedding_ids[idx]
+            else:
+                adjusted_embed_id = int(idx)
+
+            # Skip the query page itself
+            if adjusted_embed_id == embed_id:
+                continue
+
+            doc_info = self.embed_id_to_doc_id[adjusted_embed_id]
+            result = Result(
+                doc_id=doc_info["doc_id"],
+                page_num=int(doc_info["page_id"]),
+                score=float(scores[0][int(idx)]),
+                metadata=self.doc_id_to_metadata.get(int(doc_info["doc_id"]), {}),
+                base64=self.collection.get(adjusted_embed_id)
+                if return_base64_results
+                else None,
+            )
+            query_results.append(result)
+
+        return query_results
+
     def encode_image(
         self, input_data: Union[str, Image.Image, List[Union[str, Image.Image]]]
     ) -> torch.Tensor:
