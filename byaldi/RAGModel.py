@@ -186,7 +186,7 @@ class RAGMultiModalModel:
         Parameters:
             doc_id (int): The document ID of the reference page.
             page_num (int): The page number of the reference page (1-indexed).
-            k (int): The number of similar results to return. Default is 10.
+            k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
             filter_metadata (Optional[Dict[str, str]]): Optional metadata filter to apply.
             return_base64_results (Optional[bool]): Whether to return base64-encoded image results.
 

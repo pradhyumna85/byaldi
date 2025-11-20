@@ -48,7 +48,7 @@ def search_by_page_impl(
         model_instance: The RAGMultiModalModel or ColPaliModel instance
         doc_id (int): The document ID of the reference page
         page_num (int): The page number of the reference page (1-indexed)
-        k (int): The number of similar results to return. Default is 10.
+        k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
         filter_metadata (Optional[Dict[str, str]]): Optional metadata filter
         return_base64_results (Optional[bool]): Whether to return base64 images
     
@@ -100,15 +100,20 @@ def search_by_page_impl(
         req_embeddings = colpali_model.indexed_embeddings
         req_embedding_ids = None
     
-    # Ensure k is not larger than the number of indexed documents
-    k = min(k, len(req_embeddings))
+    # Handle k=-1 to return all pages
+    if k == -1:
+        k_actual = len(req_embeddings)
+    else:
+        # Request k+1 results since we'll exclude the query page itself
+        # This ensures we return exactly k results after exclusion
+        k_actual = min(k + 1, len(req_embeddings))
     
     # Compute scores using the page embedding
     qs = [page_embedding]
     scores = colpali_model.processor.score(qs, req_embeddings).cpu().numpy()
     
-    # Get top k relevant pages
-    top_pages = scores.argsort(axis=1)[0][-k:][::-1].tolist()
+    # Get top k_actual relevant pages
+    top_pages = scores.argsort(axis=1)[0][-k_actual:][::-1].tolist()
     
     # Create Result objects
     query_results = []
@@ -121,6 +126,10 @@ def search_by_page_impl(
         # Skip the query page itself
         if adjusted_embed_id == embed_id:
             continue
+        
+        # Stop if we've collected enough results (only matters when k != -1)
+        if k != -1 and len(query_results) >= k:
+            break
         
         doc_info = colpali_model.embed_id_to_doc_id[adjusted_embed_id]
         result = Result(
@@ -159,7 +168,7 @@ def search_by_page(
         model_instance: The RAGMultiModalModel instance
         doc_id (int): The document ID of the reference page
         page_num (int): The page number of the reference page (1-indexed)
-        k (int): The number of similar results to return. Default is 10.
+        k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
         filter_metadata (Optional[Dict[str, str]]): Optional metadata filter
         return_base64_results (Optional[bool]): Whether to return base64 images
     
@@ -298,7 +307,7 @@ class ExtendedRAGMultiModalModel:
         Parameters:
             doc_id (int): The document ID of the reference page
             page_num (int): The page number of the reference page (1-indexed)
-            k (int): The number of similar results to return. Default is 10.
+            k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
             filter_metadata (Optional[Dict[str, str]]): Optional metadata filter
             return_base64_results (Optional[bool]): Whether to return base64 images
         

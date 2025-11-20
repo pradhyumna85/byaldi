@@ -147,6 +147,9 @@ def test_search_by_page(rag_model_from_pretrained: RAGMultiModalModel):
     # Verify we got results
     assert len(results) > 0, "Expected at least one similar page"
     
+    # Verify we got exactly k results (fix for k parameter)
+    assert len(results) == k, f"Expected exactly {k} results, got {len(results)}"
+    
     # Verify the query page itself is not in the results
     assert not any(
         r.doc_id == doc_id and r.page_num == page_num for r in results
@@ -154,6 +157,21 @@ def test_search_by_page(rag_model_from_pretrained: RAGMultiModalModel):
     
     # Verify all results have valid scores
     assert all(r.score > 0 for r in results), "All results should have positive scores"
+    
+    # Test k=-1 to return all pages
+    all_results = rag_model_from_pretrained.search_by_page(
+        doc_id=doc_id, page_num=page_num, k=-1
+    )
+    
+    print(f"\nAll pages similar to doc_id={doc_id}, page_num={page_num}: {len(all_results)} pages")
+    
+    # Verify k=-1 returns more results than k=5
+    assert len(all_results) > len(results), "k=-1 should return more results than k=5"
+    
+    # Verify query page is not in k=-1 results either
+    assert not any(
+        r.doc_id == doc_id and r.page_num == page_num for r in all_results
+    ), "Query page should not be in k=-1 results"
 
 
 @pytest.mark.skip("This test should be made independent of the previous tests.")
