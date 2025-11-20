@@ -13,7 +13,7 @@ results = search_by_page(RAG, doc_id=0, page_num=3, k=5)
 
 ### 2️⃣ Monkey Patch (One-Line Setup)
 ```python
-from byaldi_extensions import patch_search_by_page; patch_search_by_patch()
+from byaldi_extensions import patch_search_by_page; patch_search_by_page()
 from byaldi import RAGMultiModalModel
 
 RAG = RAGMultiModalModel.from_index("my_index")
