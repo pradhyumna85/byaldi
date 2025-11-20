@@ -58,15 +58,23 @@ def search_by_page_impl(
     # Import here to avoid issues if byaldi is not installed
     from byaldi.objects import Result
     
-    # Access the underlying model if this is a RAGMultiModalModel
-    if hasattr(model_instance, 'model'):
+    # Get the ColPaliModel wrapper (not the PyTorch model)
+    # RAGMultiModalModel.model -> ColPaliModel (has indexed_embeddings, embed_id_to_doc_id, etc.)
+    # ColPaliModel.model -> PyTorch model (ColPali/ColQwen2/ColIdefics3)
+    if hasattr(model_instance, 'model') and hasattr(model_instance.model, 'indexed_embeddings'):
+        # This is RAGMultiModalModel, get the ColPaliModel wrapper
         colpali_model = model_instance.model
-    else:
+    elif hasattr(model_instance, 'indexed_embeddings'):
+        # This is already the ColPaliModel wrapper
         colpali_model = model_instance
+    else:
+        raise ValueError(
+            "model_instance must be a RAGMultiModalModel or ColPaliModel instance"
+        )
     
     # Set default value for return_base64_results if not provided
     if return_base64_results is None:
-        return_base64_results = bool(colpali_model.collection)
+        return_base64_results = bool(getattr(colpali_model, 'collection', {}))
     
     # Find the embedding ID for the given doc_id and page_num
     embed_id = None
@@ -119,8 +127,8 @@ def search_by_page_impl(
             doc_id=doc_info["doc_id"],
             page_num=int(doc_info["page_id"]),
             score=float(scores[0][int(idx)]),
-            metadata=colpali_model.doc_id_to_metadata.get(int(doc_info["doc_id"]), {}),
-            base64=colpali_model.collection.get(adjusted_embed_id)
+            metadata=getattr(colpali_model, 'doc_id_to_metadata', {}).get(int(doc_info["doc_id"]), {}),
+            base64=getattr(colpali_model, 'collection', {}).get(adjusted_embed_id)
             if return_base64_results
             else None,
         )
