@@ -1,34 +1,49 @@
 """
-Byaldi Extensions - Add search_by_page functionality without modifying the package.
+Byaldi Extensions - Add search_by_page and search_by_image functionality without modifying the package.
 
-This module provides a way to add the search_by_page functionality to existing
+This module provides a way to add the search_by_page and search_by_image functionality to existing
 Byaldi installations through monkey-patching or wrapper classes.
 
 Usage Option 1 - Monkey Patch (modifies the class):
-    from byaldi_extensions import patch_search_by_page
+    from byaldi_extensions import patch_search_by_page, patch_search_by_image
+    from PIL import Image
+    
     patch_search_by_page()
+    patch_search_by_image()
     
     # Now use Byaldi normally
     from byaldi import RAGMultiModalModel
     RAG = RAGMultiModalModel.from_index("my_index")
     results = RAG.search_by_page(doc_id=0, page_num=3, k=5)
+    
+    query_image = Image.open("query.png")
+    results = RAG.search_by_image(query_image, k=5)
 
 Usage Option 2 - Wrapper Class (no modification):
     from byaldi_extensions import ExtendedRAGMultiModalModel
+    from PIL import Image
     
     RAG = ExtendedRAGMultiModalModel.from_index("my_index")
     results = RAG.search_by_page(doc_id=0, page_num=3, k=5)
+    
+    query_image = Image.open("query.png")
+    results = RAG.search_by_image(query_image, k=5)
 
 Usage Option 3 - Standalone Function:
     from byaldi import RAGMultiModalModel
-    from byaldi_extensions import search_by_page
+    from byaldi_extensions import search_by_page, search_by_image
+    from PIL import Image
     
     RAG = RAGMultiModalModel.from_index("my_index")
     results = search_by_page(RAG, doc_id=0, page_num=3, k=5)
+    
+    query_image = Image.open("query.png")
+    results = search_by_image(RAG, query_image, k=5)
 """
 
 from typing import Dict, List, Optional, Union
 from pathlib import Path
+from PIL import Image
 
 
 def search_by_page_impl(
@@ -180,6 +195,140 @@ def search_by_page(
     )
 
 
+def search_by_image_impl(
+    model_instance,
+    image: Image.Image,
+    k: int = 10,
+    filter_metadata: Optional[Dict[str, str]] = None,
+    return_base64_results: Optional[bool] = None,
+):
+    """
+    Implementation of search_by_image that works with any Byaldi model instance.
+    
+    Find the most similar pages to a given PIL image in the index.
+    
+    Parameters:
+        model_instance: The RAGMultiModalModel or ColPaliModel instance
+        image (PIL.Image.Image): The PIL image to search with
+        k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
+        filter_metadata (Optional[Dict[str, str]]): Optional metadata filter
+        return_base64_results (Optional[bool]): Whether to return base64 images
+    
+    Returns:
+        List[Result]: A list of Result objects representing the most similar pages
+    """
+    # Import here to avoid issues if byaldi is not installed
+    from byaldi.objects import Result
+    import torch
+    
+    # Get the ColPaliModel wrapper
+    if hasattr(model_instance, 'model') and hasattr(model_instance.model, 'indexed_embeddings'):
+        # This is RAGMultiModalModel, get the ColPaliModel wrapper
+        colpali_model = model_instance.model
+    elif hasattr(model_instance, 'indexed_embeddings'):
+        # This is already the ColPaliModel wrapper
+        colpali_model = model_instance
+    else:
+        raise ValueError(
+            "model_instance must be a RAGMultiModalModel or ColPaliModel instance"
+        )
+    
+    # Set default value for return_base64_results if not provided
+    if return_base64_results is None:
+        return_base64_results = bool(getattr(colpali_model, 'collection', {}))
+    
+    # Process the image and generate embedding
+    with torch.inference_mode():
+        processed_image = colpali_model.processor.process_images([image])
+        processed_image = {
+            k: v.to(colpali_model.device).to(
+                colpali_model.model.dtype if v.dtype in [torch.float16, torch.bfloat16, torch.float32] else v.dtype
+            )
+            for k, v in processed_image.items()
+        }
+        image_embedding = colpali_model.model(**processed_image)
+    
+    # Convert to CPU for scoring
+    qs = list(torch.unbind(image_embedding.to("cpu")))
+    
+    # Prepare embeddings for scoring
+    if filter_metadata:
+        req_embeddings, req_embedding_ids = colpali_model.filter_embeddings(
+            filter_metadata=filter_metadata
+        )
+    else:
+        req_embeddings = colpali_model.indexed_embeddings
+        req_embedding_ids = None
+    
+    # Handle k=-1 to return all pages
+    if k == -1:
+        k_actual = len(req_embeddings)
+    else:
+        k_actual = min(k, len(req_embeddings))
+    
+    # Compute scores using the image embedding
+    scores = colpali_model.processor.score(qs, req_embeddings).cpu().numpy()
+    
+    # Get top k_actual relevant pages
+    top_pages = scores.argsort(axis=1)[0][-k_actual:][::-1].tolist()
+    
+    # Create Result objects
+    query_results = []
+    for idx in top_pages:
+        if filter_metadata:
+            adjusted_embed_id = req_embedding_ids[idx]
+        else:
+            adjusted_embed_id = int(idx)
+        
+        doc_info = colpali_model.embed_id_to_doc_id[adjusted_embed_id]
+        result = Result(
+            doc_id=doc_info["doc_id"],
+            page_num=int(doc_info["page_id"]),
+            score=float(scores[0][int(idx)]),
+            metadata=getattr(colpali_model, 'doc_id_to_metadata', {}).get(int(doc_info["doc_id"]), {}),
+            base64=getattr(colpali_model, 'collection', {}).get(adjusted_embed_id)
+            if return_base64_results
+            else None,
+        )
+        query_results.append(result)
+    
+    return query_results
+
+
+def search_by_image(
+    model_instance,
+    image: Image.Image,
+    k: int = 10,
+    filter_metadata: Optional[Dict[str, str]] = None,
+    return_base64_results: Optional[bool] = None,
+):
+    """
+    Standalone function to find similar pages using a PIL image as query.
+    
+    Usage:
+        from byaldi import RAGMultiModalModel
+        from byaldi_extensions import search_by_image
+        from PIL import Image
+        
+        RAG = RAGMultiModalModel.from_index("my_index")
+        query_image = Image.open("query.png")
+        results = search_by_image(RAG, query_image, k=5)
+    
+    Parameters:
+        model_instance: The RAGMultiModalModel instance
+        image (PIL.Image.Image): The PIL image to search with
+        k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
+        filter_metadata (Optional[Dict[str, str]]): Optional metadata filter
+        return_base64_results (Optional[bool]): Whether to return base64 images
+    
+    Returns:
+        List[Result]: A list of Result objects representing the most similar pages
+    """
+    return search_by_image_impl(
+        model_instance, image, k, filter_metadata, return_base64_results
+    )
+
+
 def patch_search_by_page():
     """
     Monkey-patch the Byaldi classes to add search_by_page method.
@@ -226,15 +375,63 @@ def patch_search_by_page():
         return False
 
 
+def patch_search_by_image():
+    """
+    Monkey-patch the Byaldi classes to add search_by_image method.
+    
+    This modifies the RAGMultiModalModel and ColPaliModel classes in-place.
+    Call this once at the start of your script before using Byaldi.
+    
+    Usage:
+        from byaldi_extensions import patch_search_by_image
+        from PIL import Image
+        patch_search_by_image()
+        
+        # Now use Byaldi normally with the new method
+        from byaldi import RAGMultiModalModel
+        RAG = RAGMultiModalModel.from_index("my_index")
+        query_image = Image.open("query.png")
+        results = RAG.search_by_image(query_image, k=5)
+    """
+    try:
+        from byaldi import RAGMultiModalModel
+        from byaldi.colpali import ColPaliModel
+        
+        # Add method to ColPaliModel
+        ColPaliModel.search_by_image = search_by_image_impl
+        
+        # Add method to RAGMultiModalModel
+        def rag_search_by_image(
+            self,
+            image: Image.Image,
+            k: int = 10,
+            filter_metadata: Optional[Dict[str, str]] = None,
+            return_base64_results: Optional[bool] = None,
+        ):
+            return self.model.search_by_image(
+                image, k, filter_metadata, return_base64_results
+            )
+        
+        RAGMultiModalModel.search_by_image = rag_search_by_image
+        
+        print("✓ Successfully patched Byaldi with search_by_image functionality")
+        return True
+        
+    except ImportError as e:
+        print(f"✗ Failed to patch Byaldi: {e}")
+        return False
+
+
 class ExtendedRAGMultiModalModel:
     """
-    Wrapper class that extends RAGMultiModalModel with search_by_page functionality.
+    Wrapper class that extends RAGMultiModalModel with search_by_page and search_by_image functionality.
     
     This doesn't modify the original Byaldi code, but wraps it to add new methods.
     Use this if you want to avoid monkey-patching.
     
     Usage:
         from byaldi_extensions import ExtendedRAGMultiModalModel
+        from PIL import Image
         
         # Use exactly like RAGMultiModalModel
         RAG = ExtendedRAGMultiModalModel.from_index("my_index")
@@ -242,8 +439,11 @@ class ExtendedRAGMultiModalModel:
         # All original methods work
         results = RAG.search("query", k=5)
         
-        # Plus the new method
+        # Plus the new methods
         results = RAG.search_by_page(doc_id=0, page_num=3, k=5)
+        
+        query_image = Image.open("query.png")
+        results = RAG.search_by_image(query_image, k=5)
     """
     
     def __init__(self, base_model):
@@ -318,6 +518,29 @@ class ExtendedRAGMultiModalModel:
             self._base_model, doc_id, page_num, k, filter_metadata, return_base64_results
         )
     
+    def search_by_image(
+        self,
+        image: Image.Image,
+        k: int = 10,
+        filter_metadata: Optional[Dict[str, str]] = None,
+        return_base64_results: Optional[bool] = None,
+    ):
+        """
+        Find the most similar pages to a given PIL image in the index.
+        
+        Parameters:
+            image (PIL.Image.Image): The PIL image to search with
+            k (int): The number of similar results to return. Default is 10. Use k=-1 to return all pages.
+            filter_metadata (Optional[Dict[str, str]]): Optional metadata filter
+            return_base64_results (Optional[bool]): Whether to return base64 images
+        
+        Returns:
+            List[Result]: A list of Result objects representing the most similar pages
+        """
+        return search_by_image_impl(
+            self._base_model, image, k, filter_metadata, return_base64_results
+        )
+    
     def get_doc_ids_to_file_names(self):
         """Delegate to base model."""
         return self._base_model.get_doc_ids_to_file_names()
@@ -335,3 +558,4 @@ class ExtendedRAGMultiModalModel:
 import os
 if os.environ.get("BYALDI_AUTO_PATCH", "").lower() in ("1", "true", "yes"):
     patch_search_by_page()
+    patch_search_by_image()
